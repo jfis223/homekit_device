@@ -1,0 +1,5 @@
+{
+  "name": "HomeKit Device Aggregator",
+  "content_in_root": true,
+  "homeassistant": "2026.2.0"
+}

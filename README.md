@@ -4,7 +4,7 @@ This custom integration for Home Assistant combines several related entities int
 
 ## Features
 
-- Collapse related entities into a single richer entity - a kettle's power, current and target temperature become one thermostat; a shutter's lift and tilt become one window covering (kettle, electric blanket and shutter only)
+- Collapse related entities into a single richer entity - a kettle's power, current and target temperature become one thermostat; a shutter's lift and tilt become one window covering (kettle, electric blanket, shutter and air conditioner only)
 - Group the remaining entities under one Home Assistant device
 - Configure through the Home Assistant UI
 - Real-time state synchronisation between Home Assistant and HomeKit
@@ -23,7 +23,7 @@ This custom integration for Home Assistant combines several related entities int
 
 ## Supported Device Types
 
-Three types currently collapse their sources into a single richer entity, which is what produces one HomeKit accessory: **Smart Kettle**, **Electric Blanket** and **Shutter**. The rest only group their entities under one Home Assistant device - each still becomes its own HomeKit tile, and several of their configuration options are collected but not yet acted on. Each section below says which.
+Four types currently collapse their sources into a single richer entity, which is what produces one HomeKit accessory: **Smart Kettle**, **Electric Blanket**, **Shutter** and **Air Conditioner**. The rest only group their entities under one Home Assistant device - each still becomes its own HomeKit tile, and several of their configuration options are collected but not yet acted on. Each section below says which.
 
 ### Smart Kettle
 
@@ -192,6 +192,34 @@ Only the controls the source entities actually support are exposed. A shutter wi
 
 When exposing through the HomeKit Bridge, include the `cover` domain and exclude the two original cover entities so only the aggregated shutter appears.
 
+### Air Conditioner (fan, swing + switches)
+
+Reshapes an existing air conditioner `climate` entity so its HomeKit tile carries the controls the bridge otherwise leaves out. Built for Haier hOn units; the program and louver selects are optional, so other brands work with the fallbacks.
+
+- Required:
+  - Air Conditioner (`climate` entity)
+- Optional:
+  - Program Select and Fan-Only Program Option (default `iot_fan`)
+  - Vertical Fan Direction Select
+  - Switches Inside the Tile (`switch` / `input_boolean`, several)
+
+On Home Assistant 2026.10 and later, the bridge gives a newly bridged climate with fan speeds or swing the **HeaterCooler** accessory (Home's air-conditioner tile) rather than a Thermostat; the type can be changed in the bridge options. What the tile gets, natively from the stock bridge:
+
+- Power, mode (Heat, Cool, Auto), target and current temperature
+- Fan on/off. Turning the fan on while the unit is off starts fan-only (program select, then vertical swing, then the speed); turning it off switches the unit off. The bridge never offers fan-only as a target, so while it runs the tile shows the unit on with the fan running. The bridge turns the fan on at its middle speed.
+- Fan speed and Auto, from the source's fan modes
+- Vertical swing. With the louver select it sets `swing`, and turning swing off returns the vanes to their last fixed position. Without it the source's `vertical` swing mode is used rather than the bridge's own pick of `both`, which needs horizontal vanes.
+
+Presets are not advertised: on hOn they are programs, already reached through the program select.
+
+**In-tile switches need the patched bridge override.** HomeKit lets an accessory carry extra switch services, but HA's bridge only adds them to fans (one per preset mode), never to climate accessories. The proxy lists the chosen switches in a `homekit_linked_switches` state attribute, and a patched copy of the `homekit` integration, installed as a custom component, adds one switch per listed entity inside the climate tile, whether it is bridged as a HeaterCooler or a Thermostat. Stock HA ignores the attribute.
+
+The entry also creates a **Dry Mode** switch when the source offers `dry`. The bridge hides dry whenever cool exists, so this is the only way to reach it from HomeKit. It is a config-category entity, so the bridge never gives it its own tile, and it is listed for the tile automatically. Turning it off returns the unit to the mode it was in before dry.
+
+When exposing through the HomeKit Bridge, include the new `climate` entity and exclude the original climate entity, the selects, and every switch listed for the tile, so none of them also appears as its own tile. The override rebuilds the accessory by itself when the switch list changes.
+
+Louver positions other than swing, and selects with a single option, have no HomeKit characteristic and are left out.
+
 ## HomeKit Integration
 
 This integration works alongside the Home Assistant HomeKit Bridge.
@@ -202,7 +230,7 @@ The HomeKit Bridge allocates one accessory per **entity**, not per Home Assistan
 
 So the aggregation has to happen at the entity level, and that is what this integration does:
 
-1. Related source entities are collapsed into a single proxy entity of a type that carries all of them as characteristics - `climate` for the kettle, `cover` for the shutter
+1. Related source entities are collapsed into a single proxy entity of a type that carries all of them as characteristics - `climate` for the kettle and air conditioner, `cover` for the shutter
 2. That one entity becomes one HomeKit accessory with power, current temperature, setpoint and so on all on the same card
 3. Controls that have no home on that accessory (a keep-warm switch, a projector's separate lights) stay as their own entities, and so get their own tiles - this is a HomeKit limitation, not something the integration can hide
 4. Readouts already carried by the primary accessory (temperature, status, countdown, fault) are marked as diagnostic entities. The bridge skips entities that carry a category, so they stay grouped in Home Assistant and out of the Home app - unless you list them individually in the bridge's included entities, which overrides the skip

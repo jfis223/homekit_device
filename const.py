@@ -16,7 +16,8 @@ DEVICE_TYPES = {
     "security_system": "Groups security sensors and siren under one device",
     "star_projector": "Groups a star projector's switch, rotation fan and lights under one device",
     "electric_blanket": "A multi-zone electric blanket with power and per-zone heat levels",
-    "shutter": "A shutter combining separate lift and tilt cover entities"
+    "shutter": "A shutter combining separate lift and tilt cover entities",
+    "air_conditioner": "An air conditioner with its fan, swing and switches in one thermostat"
 }
 
 # Configuration keys for all device types
@@ -84,6 +85,19 @@ CONF_FEET_TIMER = "feet_timer"
 # Shutter related configs
 CONF_LIFT_COVER = "lift_cover"
 CONF_TILT_COVER = "tilt_cover"
+
+# Air conditioner related configs
+CONF_CLIMATE_ENTITY = "climate_entity"
+CONF_PROGRAM_SELECT = "program_select"
+CONF_FAN_ONLY_OPTION = "fan_only_option"
+CONF_VERTICAL_DIRECTION = "vertical_direction"
+CONF_LINKED_SWITCHES = "linked_switches"
+DEFAULT_FAN_ONLY_OPTION = "iot_fan"
+
+# State attribute read by the patched HomeKit bridge override, which adds one
+# switch service per listed entity to the thermostat accessory. Stock HA ignores
+# it, leaving an ordinary thermostat.
+ATTR_HOMEKIT_LINKED_SWITCHES = "homekit_linked_switches"
 
 # Default values
 DEFAULT_NAME = "Aggregated Device"

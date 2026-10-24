@@ -51,9 +51,19 @@ from .const import (
     CONF_FEET_TIMER,
     CONF_LIFT_COVER,
     CONF_TILT_COVER,
+    CONF_CLIMATE_ENTITY,
+    CONF_PROGRAM_SELECT,
+    CONF_FAN_ONLY_OPTION,
+    CONF_VERTICAL_DIRECTION,
+    CONF_LINKED_SWITCHES,
+    DEFAULT_FAN_ONLY_OPTION,
     DEVICE_TYPES,
     DEFAULT_NAME,
 )
+
+# Device types whose sources already carry power, so the flow must not demand a
+# power switch for them.
+NO_POWER_TYPES = ("shutter", "air_conditioner")
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for HomeKit Device Aggregator."""
@@ -285,10 +295,31 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     selector.EntitySelectorConfig(domain="select")
                 ),
             },
+            "air_conditioner": {
+                vol.Required(CONF_CLIMATE_ENTITY): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="climate")
+                ),
+                vol.Optional(CONF_PROGRAM_SELECT): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="select")
+                ),
+                vol.Optional(
+                    CONF_FAN_ONLY_OPTION, default=DEFAULT_FAN_ONLY_OPTION
+                ): str,
+                vol.Optional(CONF_VERTICAL_DIRECTION): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="select")
+                ),
+                vol.Optional(CONF_LINKED_SWITCHES): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain=["switch", "input_boolean"],
+                        multiple=True,
+                    )
+                ),
+            },
         }
 
-        # Shutters have no power entity - the cover entities are the whole device.
-        schema = {} if device_type == "shutter" else base_schema.copy()
+        # Shutters and air conditioners have no power entity - the covers and
+        # the climate entity are the whole device.
+        schema = {} if device_type in NO_POWER_TYPES else base_schema.copy()
         if device_type in device_schemas:
             schema.update(device_schemas[device_type])
 

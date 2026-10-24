@@ -4,14 +4,38 @@ from __future__ import annotations
 import asyncio
 
 from homeassistant.components.climate import (
+    ATTR_CURRENT_HUMIDITY,
+    ATTR_CURRENT_TEMPERATURE,
+    ATTR_FAN_MODE,
+    ATTR_FAN_MODES,
+    ATTR_HUMIDITY,
+    ATTR_HVAC_ACTION,
+    ATTR_HVAC_MODES,
+    ATTR_MAX_TEMP,
+    ATTR_MIN_TEMP,
+    ATTR_SWING_MODE,
+    ATTR_SWING_MODES,
+    ATTR_TARGET_TEMP_HIGH,
+    ATTR_TARGET_TEMP_LOW,
+    ATTR_TARGET_TEMP_STEP,
+    FAN_OFF,
+    SWING_OFF,
+    SWING_ON,
+    SWING_VERTICAL,
     ClimateEntity,
     ClimateEntityFeature,
     HVACAction,
     HVACMode,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_TEMPERATURE, STATE_ON, UnitOfTemperature
+from homeassistant.const import (
+    ATTR_SUPPORTED_FEATURES,
+    ATTR_TEMPERATURE,
+    STATE_ON,
+    UnitOfTemperature,
+)
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 
@@ -22,8 +46,16 @@ from .const import (
     CONF_TARGET_TEMP,
     CONF_ZONE_BODY,
     CONF_ZONE_FEET,
+    CONF_CLIMATE_ENTITY,
+    CONF_PROGRAM_SELECT,
+    CONF_FAN_ONLY_OPTION,
+    CONF_VERTICAL_DIRECTION,
+    CONF_LINKED_SWITCHES,
+    DEFAULT_FAN_ONLY_OPTION,
+    ATTR_HOMEKIT_LINKED_SWITCHES,
 )
 from .entity import HomeKitDeviceEntity
+from .switch import dry_mode_unique_id
 
 # localtuya presents friendly options; index 0 ("Off") maps to the raw level_1.
 DEFAULT_OPTIONS = ["Off", "1", "2", "3", "4", "5", "6"]
@@ -226,7 +258,46 @@ def _as_float(value, fallback: float) -> float:
     except (TypeError, ValueError):
         return fallback
 
-class HomeKitKettleClimate(HomeKitDeviceEntity, ClimateEntity):
+class _ExtraSourcesMixin:
+    """Track entities beyond the source, each feeding part of one climate state.
+
+    Subclasses yield (entity_id, reader) pairs from `_extra_sources`. List the
+    mixin before HomeKitDeviceEntity so its async_added_to_hass runs first.
+    """
+
+    def _extra_sources(self):
+        """Yield the (entity_id, reader) pairs beyond the source entity."""
+        return ()
+
+    async def async_added_to_hass(self) -> None:
+        """Track the extra entities alongside the source entity."""
+        # Seed them before the base class writes state, so the first write is
+        # complete rather than missing the parts they carry.
+        for entity_id, reader in self._extra_sources():
+            if state := self.hass.states.get(entity_id):
+                reader(state)
+
+        await super().async_added_to_hass()
+
+        for entity_id, reader in self._extra_sources():
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass, [entity_id], self._make_handler(reader)
+                )
+            )
+
+    def _make_handler(self, reader):
+        """Build a state change handler that runs `reader` then writes state."""
+        async def _handle(event: Event[EventStateChangedData]) -> None:
+            new_state = event.data["new_state"]
+            if new_state is None:
+                return
+            reader(new_state)
+            self.async_write_ha_state()
+
+        return _handle
+
+class HomeKitKettleClimate(_ExtraSourcesMixin, HomeKitDeviceEntity, ClimateEntity):
     """Climate proxy presenting a kettle as a single HomeKit thermostat.
 
     The HomeKit bridge allocates one accessory per entity, so exposing power,
@@ -264,23 +335,6 @@ class HomeKitKettleClimate(HomeKitDeviceEntity, ClimateEntity):
         self._attr_max_temp = KETTLE_DEFAULT_MAX_TEMP
         self._attr_hvac_mode = HVACMode.OFF
 
-    async def async_added_to_hass(self) -> None:
-        """Track the temperature entities alongside the power entity."""
-        # Seed both before the base class writes state, so the first write is
-        # complete rather than a thermostat with no temperatures.
-        for entity_id, reader in self._extra_sources():
-            if state := self.hass.states.get(entity_id):
-                reader(state)
-
-        await super().async_added_to_hass()
-
-        for entity_id, reader in self._extra_sources():
-            self.async_on_remove(
-                async_track_state_change_event(
-                    self.hass, [entity_id], self._make_handler(reader)
-                )
-            )
-
     def _extra_sources(self):
         """Yield the (entity_id, reader) pairs beyond the power entity."""
         for entity_id, reader in (
@@ -289,17 +343,6 @@ class HomeKitKettleClimate(HomeKitDeviceEntity, ClimateEntity):
         ):
             if entity_id:
                 yield entity_id, reader
-
-    def _make_handler(self, reader):
-        """Build a state change handler that runs `reader` then writes state."""
-        async def _handle(event: Event[EventStateChangedData]) -> None:
-            new_state = event.data["new_state"]
-            if new_state is None:
-                return
-            reader(new_state)
-            self.async_write_ha_state()
-
-        return _handle
 
     def _read_current_temp(self, state) -> None:
         """Read the measured water temperature."""
@@ -374,6 +417,244 @@ class HomeKitKettleClimate(HomeKitDeviceEntity, ClimateEntity):
         self.async_write_ha_state()
 
 
+# Climate features the air conditioner proxy passes straight through. Preset is
+# left out: hOn's presets are programs, reached through the program select.
+AC_MIRRORED_FEATURES = (
+    ClimateEntityFeature.TARGET_TEMPERATURE
+    | ClimateEntityFeature.TARGET_TEMPERATURE_RANGE
+    | ClimateEntityFeature.TARGET_HUMIDITY
+    | ClimateEntityFeature.FAN_MODE
+    | ClimateEntityFeature.TURN_ON
+    | ClimateEntityFeature.TURN_OFF
+)
+SWING_SELECT_OPTION = "swing"
+DEFAULT_VERTICAL_POSITION = "position_3"
+
+def _hvac_mode(value) -> HVACMode | None:
+    """Parse an HVAC mode, or None for anything HA doesn't define."""
+    try:
+        return HVACMode(value)
+    except ValueError:
+        return None
+
+class HomeKitAirConditioner(_ExtraSourcesMixin, HomeKitDeviceEntity, ClimateEntity):
+    """Climate proxy folding an air conditioner's extras into its tile.
+
+    The bridge bridges this as a HeaterCooler (or a Thermostat, if chosen) with
+    a linked fan service, but never offers fan-only as a target and swings on
+    "both". This proxy maps fan on from Off to the unit's fan-only program,
+    drives swing through the vertical louver select, and lists switches for
+    the patched bridge override to add inside the same tile.
+    """
+
+    _attr_icon = "mdi:air-conditioner"
+    _attr_swing_modes = [SWING_OFF, SWING_ON]
+    # hOn applies a program before it takes follow-up writes; the same gap the
+    # unit's hand-written fan automation used.
+    _program_settle = 2
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        climate_entity: str,
+        program_select: str | None = None,
+        fan_only_option: str = DEFAULT_FAN_ONLY_OPTION,
+        vertical_select: str | None = None,
+        linked_switches: list[str] | None = None,
+    ) -> None:
+        """Initialize the air conditioner proxy."""
+        super().__init__(hass, entry_id, "Air Conditioner", climate_entity)
+        # The device's primary entity, so it takes the device's name.
+        self._attr_name = None
+        self._program_select = program_select
+        self._fan_only_option = fan_only_option
+        self._vertical_select = vertical_select
+        self._linked_switches = list(linked_switches or [])
+        self._dry_switch_unique_id = dry_mode_unique_id(entry_id, climate_entity)
+        self._cmd_lock = asyncio.Lock()
+        self._attr_temperature_unit = hass.config.units.temperature_unit
+        self._attr_hvac_mode = HVACMode.OFF
+        self._attr_hvac_modes = [HVACMode.OFF]
+        self._attr_fan_mode = FAN_OFF
+        self._attr_swing_mode = SWING_OFF
+        self._unit_off = True
+        self._source_swing_modes: list[str] = []
+        self._source_swing_mode: str | None = None
+        self._vertical_position: str | None = None
+        self._last_position = DEFAULT_VERTICAL_POSITION
+
+    def _extra_sources(self):
+        """Yield the vertical louver select when one is configured."""
+        if self._vertical_select:
+            yield self._vertical_select, self._read_vertical
+
+    def _read_vertical(self, state) -> None:
+        """Track the louver position, remembering the last fixed one."""
+        if state.state in UNAVAILABLE_STATES:
+            return
+        self._vertical_position = state.state
+        if state.state != SWING_SELECT_OPTION:
+            self._last_position = state.state
+        self._attr_swing_mode = self._current_swing()
+
+    def _current_swing(self) -> str:
+        """Whether the vanes are swinging, from whichever source drives them."""
+        if self._vertical_select:
+            swinging = self._vertical_position == SWING_SELECT_OPTION
+        else:
+            swinging = self._source_swing_mode not in (None, SWING_OFF)
+        return SWING_ON if swinging else SWING_OFF
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        """List the switches the patched bridge adds inside this tile."""
+        linked = list(self._linked_switches)
+        registry = er.async_get(self.hass)
+        if dry := registry.async_get_entity_id(
+            "switch", DOMAIN, self._dry_switch_unique_id
+        ):
+            linked.append(dry)
+        return {ATTR_HOMEKIT_LINKED_SWITCHES: linked} if linked else None
+
+    async def async_update_from_source(self, state) -> None:
+        """Mirror the source climate, reshaping fan and swing for HomeKit."""
+        if state.state in UNAVAILABLE_STATES:
+            self._attr_available = False
+            self.async_write_ha_state()
+            return
+
+        self._attr_available = True
+        attrs = state.attributes
+        source_features = ClimateEntityFeature(attrs.get(ATTR_SUPPORTED_FEATURES, 0))
+        features = source_features & AC_MIRRORED_FEATURES
+        self._source_swing_modes = list(attrs.get(ATTR_SWING_MODES) or [])
+        self._source_swing_mode = attrs.get(ATTR_SWING_MODE)
+        if self._vertical_select or (
+            source_features & ClimateEntityFeature.SWING_MODE
+            and any(mode != SWING_OFF for mode in self._source_swing_modes)
+        ):
+            features |= ClimateEntityFeature.SWING_MODE
+        self._attr_supported_features = features
+
+        # Fan-only stays a real mode even though the bridge never offers it as
+        # a target: the fan's Active reads off whenever the mode is off, so
+        # reporting fan-only as off would show a running fan as stopped.
+        modes = [
+            mode
+            for mode in map(_hvac_mode, attrs.get(ATTR_HVAC_MODES) or [])
+            if mode is not None
+        ]
+        self._attr_hvac_modes = modes if HVACMode.OFF in modes else [HVACMode.OFF, *modes]
+        self._unit_off = state.state == HVACMode.OFF
+        mode = _hvac_mode(state.state)
+        self._attr_hvac_mode = mode if mode in self._attr_hvac_modes else HVACMode.OFF
+        self._attr_hvac_action = attrs.get(ATTR_HVAC_ACTION)
+
+        self._attr_fan_modes = [FAN_OFF, *(attrs.get(ATTR_FAN_MODES) or [])]
+        self._attr_fan_mode = (
+            FAN_OFF if self._unit_off else attrs.get(ATTR_FAN_MODE, FAN_OFF)
+        )
+        self._attr_swing_mode = self._current_swing()
+
+        self._attr_current_temperature = attrs.get(ATTR_CURRENT_TEMPERATURE)
+        self._attr_target_temperature = attrs.get(ATTR_TEMPERATURE)
+        self._attr_target_temperature_high = attrs.get(ATTR_TARGET_TEMP_HIGH)
+        self._attr_target_temperature_low = attrs.get(ATTR_TARGET_TEMP_LOW)
+        self._attr_current_humidity = attrs.get(ATTR_CURRENT_HUMIDITY)
+        self._attr_target_humidity = attrs.get(ATTR_HUMIDITY)
+        for attr, key in (
+            ("_attr_min_temp", ATTR_MIN_TEMP),
+            ("_attr_max_temp", ATTR_MAX_TEMP),
+            ("_attr_target_temperature_step", ATTR_TARGET_TEMP_STEP),
+        ):
+            if (value := attrs.get(key)) is not None:
+                setattr(self, attr, value)
+        self.async_write_ha_state()
+
+    async def _climate(self, service: str, **data) -> None:
+        """Call a climate service on the source entity."""
+        await self.hass.services.async_call(
+            "climate",
+            service,
+            {"entity_id": self._source_entity, **data},
+            blocking=True,
+        )
+
+    async def async_set_temperature(self, **kwargs) -> None:
+        """Forward the setpoint (and any mode sent with it) to the source."""
+        await self._climate("set_temperature", **kwargs)
+
+    async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
+        """Forward the mode to the source."""
+        await self._climate("set_hvac_mode", hvac_mode=hvac_mode)
+
+    async def async_turn_on(self) -> None:
+        """Turn the source on."""
+        await self._climate("turn_on")
+
+    async def async_turn_off(self) -> None:
+        """Turn the source off."""
+        await self._climate("turn_off")
+
+    async def async_set_fan_mode(self, fan_mode: str) -> None:
+        """Map the fan service's on/off and speed onto the unit.
+
+        Off switches the whole unit off, as the fan is part of it. A speed
+        while the unit is off starts fan-only first, the one way HomeKit can
+        reach that mode.
+        """
+        async with self._cmd_lock:
+            if fan_mode == FAN_OFF:
+                await self._climate("set_hvac_mode", hvac_mode=HVACMode.OFF)
+                return
+            if self._unit_off:
+                await self._start_fan_only()
+            await self._climate("set_fan_mode", fan_mode=fan_mode)
+
+    async def _start_fan_only(self) -> None:
+        """Run the fan on its own with the vanes swinging."""
+        if self._program_select:
+            await self.hass.services.async_call(
+                "select",
+                "select_option",
+                {"entity_id": self._program_select, "option": self._fan_only_option},
+                blocking=True,
+            )
+            await asyncio.sleep(self._program_settle)
+        else:
+            await self._climate("set_hvac_mode", hvac_mode=HVACMode.FAN_ONLY)
+        await self._set_swing(True)
+
+    async def async_set_swing_mode(self, swing_mode: str) -> None:
+        """Swing the vertical vanes, or hold them at the last fixed position."""
+        async with self._cmd_lock:
+            await self._set_swing(swing_mode != SWING_OFF)
+
+    async def _set_swing(self, on: bool) -> None:
+        """Drive the vertical louver select, or the source's own swing mode."""
+        if self._vertical_select:
+            await self.hass.services.async_call(
+                "select",
+                "select_option",
+                {
+                    "entity_id": self._vertical_select,
+                    "option": SWING_SELECT_OPTION if on else self._last_position,
+                },
+                blocking=True,
+            )
+            return
+        if not on:
+            await self._climate("set_swing_mode", swing_mode=SWING_OFF)
+            return
+        swinging = [mode for mode in self._source_swing_modes if mode != SWING_OFF]
+        if not swinging:
+            return
+        # Vertical first: "both" asks for horizontal vanes many units lack.
+        target = SWING_VERTICAL if SWING_VERTICAL in swinging else swinging[0]
+        await self._climate("set_swing_mode", swing_mode=target)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -411,6 +692,22 @@ async def async_setup_entry(
                         zones,
                     )
                 )
+
+    elif device_type == "air_conditioner":
+        if climate_entity := config_entry.data.get(CONF_CLIMATE_ENTITY):
+            entities.append(
+                HomeKitAirConditioner(
+                    hass,
+                    config_entry.entry_id,
+                    climate_entity,
+                    config_entry.data.get(CONF_PROGRAM_SELECT),
+                    config_entry.data.get(
+                        CONF_FAN_ONLY_OPTION, DEFAULT_FAN_ONLY_OPTION
+                    ),
+                    config_entry.data.get(CONF_VERTICAL_DIRECTION),
+                    config_entry.data.get(CONF_LINKED_SWITCHES),
+                )
+            )
 
     if entities:
         async_add_entities(entities)

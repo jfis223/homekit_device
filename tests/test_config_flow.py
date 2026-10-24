@@ -14,7 +14,9 @@ from homeassistant.const import ATTR_SUPPORTED_FEATURES
 from homeassistant.data_entry_flow import FlowResultType
 
 from custom_components.homekit_device.const import (
+    CONF_CLIMATE_ENTITY,
     CONF_DEVICE_TYPE,
+    CONF_FAN_ONLY_OPTION,
     CONF_LIFT_COVER,
     CONF_NAME,
     CONF_POWER_SWITCH,
@@ -82,8 +84,22 @@ async def test_shutter_needs_only_a_lift_cover(hass):
     assert CONF_POWER_SWITCH not in result["data"]
 
 
+async def test_air_conditioner_needs_only_a_climate_entity(hass):
+    """The climate entity carries its own power, so no power switch is asked for."""
+    result = await start_flow(hass, "air_conditioner", "Bedroom AC")
+    assert CONF_POWER_SWITCH not in schema_keys(result)
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_CLIMATE_ENTITY: "climate.bedroom"}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_CLIMATE_ENTITY] == "climate.bedroom"
+    assert result["data"][CONF_FAN_ONLY_OPTION] == "iot_fan"
+
+
 async def test_other_device_types_keep_the_base_schema(hass):
-    """The skip is specific to shutters, not a hole in every schema."""
+    """The skip is specific to the no-power types, not a hole in every schema."""
     result = await start_flow(hass, "kettle", "Test Kettle")
 
     assert CONF_POWER_SWITCH in schema_keys(result)

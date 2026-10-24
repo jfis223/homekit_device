@@ -69,7 +69,6 @@ class HomeKitDeviceEntity:
             manufacturer="HomeKit Device Aggregator",
             model=self.device_type.title(),
             suggested_area="Kitchen" if self.device_type == "kettle" else None,
-            via_device=(DOMAIN, f"{DOMAIN}_{entry_id}"),
         )
         self._attr_should_poll = False
 

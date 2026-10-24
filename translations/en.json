@@ -52,7 +52,7 @@
                     "tilt_cover": "Tilt Cover (slat angle, optional)",
                     "obstruction_detected": "Obstruction Sensor",
                     "motion_sensor": "Motion Sensor",
-                    "climate_entity": "Air Conditioner (climate)",
+                    "climate_entity": "Climate Entity",
                     "program_select": "Program Select (optional)",
                     "fan_only_option": "Fan-Only Program Option",
                     "vertical_direction": "Vertical Fan Direction Select (optional)",
@@ -86,7 +86,8 @@
                 "star_projector": "Star Projector",
                 "electric_blanket": "Electric Blanket",
                 "shutter": "Shutter (lift + tilt)",
-                "air_conditioner": "Air Conditioner (fan, swing + switches)"
+                "air_conditioner": "Air Conditioner (fan, swing + switches)",
+                "climate_switches": "Heater / Boiler (thermostat + switches)"
             }
         }
     },
@@ -102,7 +103,8 @@
         "star_projector": "Groups a master switch, rotation fan and laser/background lights under one device",
         "electric_blanket": "Combines a power switch and per-zone heat-level selects into per-zone HomeKit heaters",
         "shutter": "Combines separate lift and tilt cover entities into a single HomeKit window covering",
-        "air_conditioner": "Folds fan-only mode, fan speed, vertical swing and the unit's switches into its own HomeKit air conditioner tile. The in-tile switches need the patched HomeKit bridge override"
+        "air_conditioner": "Folds fan-only mode, fan speed, vertical swing and the unit's switches into its own HomeKit air conditioner tile. The in-tile switches need the patched HomeKit bridge override",
+        "climate_switches": "Mirrors any climate entity, such as a heater or boiler, and puts the chosen switches inside its HomeKit tile. The in-tile switches need the patched HomeKit bridge override"
     },
     "entity_descriptions": {
         "power_switch": "Main power control — accepts a switch or a fan entity (fan-domain power exposes percentage speed in HomeKit)",
@@ -144,11 +146,11 @@
         "tilt_cover": "Cover entity that angles the slats - used directly if it supports setting a tilt position, otherwise its lift position is driven instead",
         "obstruction_detected": "Detects obstructions in the door's path",
         "motion_sensor": "Detects motion near the door",
-        "climate_entity": "The air conditioner's climate entity. Its temperatures, modes and fan speeds are mirrored",
+        "climate_entity": "The climate entity to mirror. Its temperatures, modes and (for an air conditioner) fan speeds are mirrored",
         "program_select": "Select that switches the unit's program. Fan-only is started by choosing the fan-only option here; without it the climate's fan_only HVAC mode is used",
         "fan_only_option": "The program select option that runs the fan on its own (iot_fan on Haier hOn units)",
         "vertical_direction": "Select for the vertical louver. HomeKit's swing toggle sets its swing option and restores the last fixed position when turned off; without it the climate's own vertical swing mode is used",
-        "linked_switches": "Switches and toggle helpers shown as switches inside the air conditioner tile. Requires the patched HomeKit bridge override; stock Home Assistant ignores them. Exclude them from the bridge so they don't also appear as their own tiles"
+        "linked_switches": "Switches and toggle helpers shown as switches inside the climate's tile. Requires the patched HomeKit bridge override; stock Home Assistant ignores them. Exclude them from the bridge so they don't also appear as their own tiles"
     },
     "options": {
         "step": {
@@ -159,6 +161,13 @@
                     "program_select": "Program Select (optional)",
                     "fan_only_option": "Fan-Only Program Option",
                     "vertical_direction": "Vertical Fan Direction Select (optional)",
+                    "linked_switches": "Switches Inside the Tile, in Order"
+                }
+            },
+            "switches": {
+                "title": "Tile Switches",
+                "description": "The switches appear in the HomeKit tile in the order listed here. Saving reloads the entry and rebuilds the HomeKit accessory.",
+                "data": {
                     "linked_switches": "Switches Inside the Tile, in Order"
                 }
             }

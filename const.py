@@ -17,7 +17,8 @@ DEVICE_TYPES = {
     "star_projector": "Groups a star projector's switch, rotation fan and lights under one device",
     "electric_blanket": "A multi-zone electric blanket with power and per-zone heat levels",
     "shutter": "A shutter combining separate lift and tilt cover entities",
-    "air_conditioner": "An air conditioner with its fan, swing and switches in one thermostat"
+    "air_conditioner": "An air conditioner with its fan, swing and switches in one thermostat",
+    "climate_switches": "Any climate entity, such as a heater or boiler, with switches in its tile"
 }
 
 # Configuration keys for all device types

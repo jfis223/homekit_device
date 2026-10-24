@@ -23,7 +23,7 @@ This custom integration for Home Assistant combines several related entities int
 
 ## Supported Device Types
 
-Four types currently collapse their sources into a single richer entity, which is what produces one HomeKit accessory: **Smart Kettle**, **Electric Blanket**, **Shutter** and **Air Conditioner**. The rest only group their entities under one Home Assistant device - each still becomes its own HomeKit tile, and several of their configuration options are collected but not yet acted on. Each section below says which.
+Five types currently collapse their sources into a single richer entity, which is what produces one HomeKit accessory: **Smart Kettle**, **Electric Blanket**, **Shutter**, **Air Conditioner** and **Heater / Boiler**. The rest only group their entities under one Home Assistant device - each still becomes its own HomeKit tile, and several of their configuration options are collected but not yet acted on. Each section below says which.
 
 ### Smart Kettle
 
@@ -220,9 +220,18 @@ When exposing through the HomeKit Bridge, include the new `climate` entity and e
 
 When a vertical louver select is configured, the entry also creates a **Swing** switch: on sets the select to `swing`, off returns the vanes to their last fixed position. The bridge puts swing on the air conditioner service, where the Home app does not show it, so this switch is how swing appears in the tile. Like Dry Mode it is config-category and listed for the tile automatically.
 
-**Switch order.** The switches appear in the tile in the order of the list. Use the entry's **Configure** button to change the list or reorder it; the entry's own Swing and Dry Mode switches can go anywhere in it, and any left out go first. The override numbers the services in that order (fan first), which is HomeKit's only per-service ordering.
+**Switch order.** The switches appear in the tile in the order of the list. Use the entry's **Configure** button to change the list or reorder it; the entry's own Swing and Dry Mode switches can go anywhere in it, and any left out go first. The Home app sorts a tile's services by name, so the override carries the order in invisible prefixes on the names (fan first).
 
 Louver positions other than swing, and selects with a single option, have no HomeKit characteristic and are left out.
+
+### Heater / Boiler (thermostat + switches)
+
+Mirrors any `climate` entity unchanged and lists switches for its tile, for a heater or boiler whose timers or modes live in separate `switch` / `input_boolean` entities. It adds none of the air conditioner's fan, swing or dry handling, so the bridge bridges it as the same Thermostat it would give the source.
+
+- Required: Climate Entity
+- Optional: Switches Inside the Tile, in order (**Configure** changes the list later)
+
+Like the air conditioner, the in-tile switches need the patched bridge override. Bridge the new `climate` entity instead of the original, and exclude the listed switches.
 
 ## HomeKit Integration
 

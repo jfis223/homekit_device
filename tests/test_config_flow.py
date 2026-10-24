@@ -232,3 +232,49 @@ async def test_only_air_conditioners_offer_configure(hass):
 
     assert not ConfigFlow.async_supports_options_flow(kettle)
     assert ConfigFlow.async_supports_options_flow(ac)
+
+
+async def test_climate_switches_needs_only_a_climate_entity(hass):
+    result = await start_flow(hass, "climate_switches", "Heater Boiler")
+    assert schema_keys(result) == {CONF_CLIMATE_ENTITY, "linked_switches"}
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_CLIMATE_ENTITY: "climate.boiler", "linked_switches": ["input_boolean.a"]},
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"]["linked_switches"] == ["input_boolean.a"]
+
+
+async def test_climate_switches_options_edit_only_the_switches(hass):
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+    from unittest.mock import patch
+
+    from custom_components.homekit_device.config_flow import ConfigFlow
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Heater Boiler",
+            CONF_DEVICE_TYPE: "climate_switches",
+            CONF_CLIMATE_ENTITY: "climate.boiler",
+            "linked_switches": ["input_boolean.a", "input_boolean.b"],
+        },
+    )
+    entry.add_to_hass(hass)
+    assert ConfigFlow.async_supports_options_flow(entry)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["step_id"] == "switches"
+    assert schema_keys(result) == {"linked_switches"}
+
+    with patch.object(hass.config_entries, "async_schedule_reload") as reload:
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"linked_switches": ["input_boolean.b"]}
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.data["linked_switches"] == ["input_boolean.b"]
+    assert entry.data[CONF_CLIMATE_ENTITY] == "climate.boiler"
+    reload.assert_called_once_with(entry.entry_id)

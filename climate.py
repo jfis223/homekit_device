@@ -705,6 +705,30 @@ class HomeKitAirConditioner(_ExtraSourcesMixin, HomeKitDeviceEntity, ClimateEnti
         await self._climate("set_swing_mode", swing_mode=target)
 
 
+class HomeKitClimateWithSwitches(HomeKitAirConditioner):
+    """Climate proxy that only adds switches to a thermostat's tile.
+
+    For a heater or boiler with no fan, swing or dry mode to reshape. It
+    mirrors the source like the air conditioner does, without the program,
+    louver or dry mode extras, so the bridge sees a plain thermostat.
+    """
+
+    _attr_icon = "mdi:thermostat"
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        climate_entity: str,
+        linked_switches: list[str] | None = None,
+    ) -> None:
+        """Initialize the proxy."""
+        super().__init__(
+            hass, entry_id, climate_entity, linked_switches=linked_switches
+        )
+        self._own_switch_unique_ids = []
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -755,6 +779,17 @@ async def async_setup_entry(
                         CONF_FAN_ONLY_OPTION, DEFAULT_FAN_ONLY_OPTION
                     ),
                     config_entry.data.get(CONF_VERTICAL_DIRECTION),
+                    config_entry.data.get(CONF_LINKED_SWITCHES),
+                )
+            )
+
+    elif device_type == "climate_switches":
+        if climate_entity := config_entry.data.get(CONF_CLIMATE_ENTITY):
+            entities.append(
+                HomeKitClimateWithSwitches(
+                    hass,
+                    config_entry.entry_id,
+                    climate_entity,
                     config_entry.data.get(CONF_LINKED_SWITCHES),
                 )
             )

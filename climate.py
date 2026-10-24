@@ -10,6 +10,7 @@ from homeassistant.components.climate import (
     ATTR_FAN_MODES,
     ATTR_HUMIDITY,
     ATTR_HVAC_ACTION,
+    ATTR_HVAC_MODE,
     ATTR_HVAC_MODES,
     ATTR_MAX_TEMP,
     ATTR_MIN_TEMP,
@@ -34,7 +35,7 @@ from homeassistant.const import (
     STATE_ON,
     UnitOfTemperature,
 )
-from homeassistant.core import Event, EventStateChangedData, HomeAssistant
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
@@ -55,7 +56,7 @@ from .const import (
     ATTR_HOMEKIT_LINKED_SWITCHES,
 )
 from .entity import HomeKitDeviceEntity
-from .switch import dry_mode_unique_id
+from .switch import dry_mode_unique_id, swing_unique_id
 
 # localtuya presents friendly options; index 0 ("Off") maps to the raw level_1.
 DEFAULT_OPTIONS = ["Off", "1", "2", "3", "4", "5", "6"]
@@ -427,6 +428,14 @@ AC_MIRRORED_FEATURES = (
     | ClimateEntityFeature.TURN_ON
     | ClimateEntityFeature.TURN_OFF
 )
+# The set_temperature fields a climate entity takes; the rest of the service
+# call (entity_id and the like) belongs to this proxy, not the source.
+SET_TEMPERATURE_FIELDS = (
+    ATTR_TEMPERATURE,
+    ATTR_TARGET_TEMP_HIGH,
+    ATTR_TARGET_TEMP_LOW,
+    ATTR_HVAC_MODE,
+)
 SWING_SELECT_OPTION = "swing"
 DEFAULT_VERTICAL_POSITION = "position_3"
 
@@ -471,7 +480,11 @@ class HomeKitAirConditioner(_ExtraSourcesMixin, HomeKitDeviceEntity, ClimateEnti
         self._fan_only_option = fan_only_option
         self._vertical_select = vertical_select
         self._linked_switches = list(linked_switches or [])
-        self._dry_switch_unique_id = dry_mode_unique_id(entry_id, climate_entity)
+        # Switches this entry creates itself, in their default tile order.
+        self._own_switch_unique_ids = [
+            swing_unique_id(entry_id, vertical_select) if vertical_select else None,
+            dry_mode_unique_id(entry_id, climate_entity),
+        ]
         self._cmd_lock = asyncio.Lock()
         self._attr_temperature_unit = hass.config.units.temperature_unit
         self._attr_hvac_mode = HVACMode.OFF
@@ -483,6 +496,28 @@ class HomeKitAirConditioner(_ExtraSourcesMixin, HomeKitDeviceEntity, ClimateEnti
         self._source_swing_mode: str | None = None
         self._vertical_position: str | None = None
         self._last_position = DEFAULT_VERTICAL_POSITION
+
+    async def async_added_to_hass(self) -> None:
+        """Rewrite the switch list once this entry's own switches register.
+
+        On first setup they can register after this entity's first write,
+        which would leave them out of the list until the source next changed.
+        """
+        await super().async_added_to_hass()
+
+        @callback
+        def _own_switch_registered(event: Event[er.EventEntityRegistryUpdatedData]) -> None:
+            if event.data["action"] != "create":
+                return
+            entry = er.async_get(self.hass).async_get(event.data["entity_id"])
+            if entry and entry.unique_id in self._own_switch_unique_ids:
+                self.async_write_ha_state()
+
+        self.async_on_remove(
+            self.hass.bus.async_listen(
+                er.EVENT_ENTITY_REGISTRY_UPDATED, _own_switch_registered
+            )
+        )
 
     def _extra_sources(self):
         """Yield the vertical louver select when one is configured."""
@@ -508,13 +543,21 @@ class HomeKitAirConditioner(_ExtraSourcesMixin, HomeKitDeviceEntity, ClimateEnti
 
     @property
     def extra_state_attributes(self) -> dict | None:
-        """List the switches the patched bridge adds inside this tile."""
-        linked = list(self._linked_switches)
+        """List the switches the patched bridge adds inside this tile, in order.
+
+        The order is the tile's: the configured list as given, which may place
+        this entry's own switches anywhere. Own switches it leaves out go
+        first.
+        """
         registry = er.async_get(self.hass)
-        if dry := registry.async_get_entity_id(
-            "switch", DOMAIN, self._dry_switch_unique_id
-        ):
-            linked.append(dry)
+        own = [
+            entity_id
+            for unique_id in self._own_switch_unique_ids
+            if unique_id
+            and (entity_id := registry.async_get_entity_id("switch", DOMAIN, unique_id))
+        ]
+        linked = [e for e in own if e not in self._linked_switches]
+        linked += self._linked_switches
         return {ATTR_HOMEKIT_LINKED_SWITCHES: linked} if linked else None
 
     async def async_update_from_source(self, state) -> None:
@@ -574,16 +617,23 @@ class HomeKitAirConditioner(_ExtraSourcesMixin, HomeKitDeviceEntity, ClimateEnti
 
     async def _climate(self, service: str, **data) -> None:
         """Call a climate service on the source entity."""
+        # The target goes last so nothing in `data` can redirect the call; an
+        # entity_id there would point it back at this proxy and recurse.
         await self.hass.services.async_call(
             "climate",
             service,
-            {"entity_id": self._source_entity, **data},
+            {**data, "entity_id": self._source_entity},
             blocking=True,
         )
 
     async def async_set_temperature(self, **kwargs) -> None:
         """Forward the setpoint (and any mode sent with it) to the source."""
-        await self._climate("set_temperature", **kwargs)
+        # HA hands over the whole service call, this proxy's entity_id
+        # included, so pass on only the setpoint fields.
+        await self._climate(
+            "set_temperature",
+            **{key: value for key, value in kwargs.items() if key in SET_TEMPERATURE_FIELDS},
+        )
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Forward the mode to the source."""

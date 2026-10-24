@@ -255,19 +255,48 @@ async def test_swing_without_a_select_prefers_vertical_over_both(
 # Linked switches
 
 
-async def test_linked_switches_list_the_configured_ones_and_dry(hass, air_conditioner):
-    entity_id, entry = await air_conditioner(
-        HVACMode.COOL, linked_switches=[NIGHT, TIMER]
+def own_switch(hass, entry, source: str, suffix: str) -> str:
+    entity_id = er.async_get(hass).async_get_entity_id(
+        "switch", "homekit_device", f"homekit_device_{entry.entry_id}_{source}_{suffix}"
     )
+    assert entity_id is not None, f"no {suffix} switch"
+    return entity_id
+
+
+async def linked_after_setup(hass, entity_id) -> list[str]:
     # Any source update rewrites the state after every platform is set up.
     set_source(hass, HVACMode.COOL)
     await hass.async_block_till_done()
+    return hass.states.get(entity_id).attributes[LINKED]
 
-    dry = er.async_get(hass).async_get_entity_id(
-        "switch", "homekit_device", f"homekit_device_{entry.entry_id}_{SOURCE}_dry_mode"
+
+async def test_own_switches_left_out_of_the_list_go_first(hass, air_conditioner):
+    hass.states.async_set(VERTICAL, "position_3", {"options": ["position_3", "swing"]})
+    entity_id, entry = await air_conditioner(
+        HVACMode.COOL, vertical_direction=VERTICAL, linked_switches=[NIGHT, TIMER]
     )
-    assert dry is not None
-    assert hass.states.get(entity_id).attributes[LINKED] == [NIGHT, TIMER, dry]
+
+    swing = own_switch(hass, entry, VERTICAL, "swing")
+    dry = own_switch(hass, entry, SOURCE, "dry_mode")
+    assert await linked_after_setup(hass, entity_id) == [swing, dry, NIGHT, TIMER]
+
+
+async def test_the_configured_order_is_the_tile_order(hass, air_conditioner):
+    """Own switches can be placed anywhere once they exist, e.g. via Configure."""
+    hass.states.async_set(VERTICAL, "position_3", {"options": ["position_3", "swing"]})
+    entity_id, entry = await air_conditioner(
+        HVACMode.COOL, vertical_direction=VERTICAL, linked_switches=[TIMER]
+    )
+    swing = own_switch(hass, entry, VERTICAL, "swing")
+    dry = own_switch(hass, entry, SOURCE, "dry_mode")
+
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "linked_switches": [swing, TIMER, dry, NIGHT]}
+    )
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert await linked_after_setup(hass, entity_id) == [swing, TIMER, dry, NIGHT]
 
 
 async def test_no_linked_attribute_without_switches_or_dry(hass, air_conditioner):
@@ -337,3 +366,64 @@ async def test_dry_off_leaves_other_modes_alone(
     await hass.services.async_call("switch", "turn_off", {"entity_id": dry}, blocking=True)
 
     assert calls_to(service_calls, SOURCE) == []
+
+
+# Swing switch
+
+
+async def test_swing_switch_drives_the_louver_and_restores_the_position(
+    hass, air_conditioner, created_entities, service_calls
+):
+    options = {"options": ["position_1", "position_2", "position_3", "swing"]}
+    hass.states.async_set(VERTICAL, "position_2", options)
+    _, entry = await air_conditioner(HVACMode.COOL, vertical_direction=VERTICAL)
+    swing = own_switch(hass, entry, VERTICAL, "swing")
+    registry_entry = er.async_get(hass).async_get(swing)
+    assert registry_entry.entity_category is EntityCategory.CONFIG
+    assert hass.states.get(swing).state == "off"
+
+    await hass.services.async_call("switch", "turn_on", {"entity_id": swing}, blocking=True)
+    hass.states.async_set(VERTICAL, "swing", options)
+    await hass.async_block_till_done()
+    assert hass.states.get(swing).state == "on"
+    await hass.services.async_call("switch", "turn_off", {"entity_id": swing}, blocking=True)
+
+    assert calls_to(service_calls, VERTICAL) == [
+        ("select", "select_option", VERTICAL, {"option": "swing"}),
+        ("select", "select_option", VERTICAL, {"option": "position_2"}),
+    ]
+
+
+async def test_no_swing_switch_without_a_louver_select(
+    hass, air_conditioner, created_entities
+):
+    _, entry = await air_conditioner(HVACMode.COOL)
+
+    # Only dry: the swing switch needs the select to drive.
+    assert len(created_entities(entry, "switch")) == 1
+
+
+# Setpoint
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param({"temperature": 24}, id="setpoint"),
+        pytest.param({"temperature": 24, "hvac_mode": HVACMode.HEAT}, id="with-mode"),
+    ],
+)
+async def test_setpoint_reaches_the_source(hass, air_conditioner, service_calls, data):
+    """The service call carries the proxy's own entity_id; it must not be passed on.
+
+    It was, and overrode the source's: the proxy called itself until the
+    recursion limit, and HomeKit snapped the slider back.
+    """
+    entity_id, _ = await air_conditioner(HVACMode.COOL)
+
+    await call_proxy(hass, "set_temperature", entity_id, **data)
+
+    assert calls_to(service_calls, SOURCE) == [
+        ("climate", "set_temperature", SOURCE, data),
+    ]
+    assert not [c for c in service_calls[1:] if c.data.get("entity_id") == entity_id]

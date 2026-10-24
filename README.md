@@ -218,6 +218,10 @@ The entry also creates a **Dry Mode** switch when the source offers `dry`. The b
 
 When exposing through the HomeKit Bridge, include the new `climate` entity and exclude the original climate entity, the selects, and every switch listed for the tile, so none of them also appears as its own tile. The override rebuilds the accessory by itself when the switch list changes.
 
+When a vertical louver select is configured, the entry also creates a **Swing** switch: on sets the select to `swing`, off returns the vanes to their last fixed position. The bridge puts swing on the air conditioner service, where the Home app does not show it, so this switch is how swing appears in the tile. Like Dry Mode it is config-category and listed for the tile automatically.
+
+**Switch order.** The switches appear in the tile in the order of the list. Use the entry's **Configure** button to change the list or reorder it; the entry's own Swing and Dry Mode switches can go anywhere in it, and any left out go first. The override numbers the services in that order (fan first), which is HomeKit's only per-service ordering.
+
 Louver positions other than swing, and selects with a single option, have no HomeKit characteristic and are left out.
 
 ## HomeKit Integration

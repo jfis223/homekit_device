@@ -17,6 +17,7 @@ from .const import (
     CONF_CHILD_LOCK,
     CONF_DISPLAY_SWITCH,
     CONF_CLIMATE_ENTITY,
+    CONF_VERTICAL_DIRECTION,
 )
 from .entity import HomeKitDeviceEntity, HomeKitDeviceSwitch
 
@@ -25,9 +26,66 @@ from .entity import HomeKitDeviceEntity, HomeKitDeviceSwitch
 NOT_RESTORABLE_MODES = (HVACMode.OFF, HVACMode.DRY, HVACMode.FAN_ONLY)
 
 
+# The louver select's option that swings the vanes, and the fixed position to
+# fall back to when swing is turned off before any other position was seen.
+SWING_OPTION = "swing"
+DEFAULT_VERTICAL_POSITION = "position_3"
+
+
 def dry_mode_unique_id(entry_id: str, climate_entity: str) -> str:
     """Unique id of an air conditioner's dry switch, shared with climate.py."""
     return f"{DOMAIN}_{entry_id}_{climate_entity}_dry_mode"
+
+
+def swing_unique_id(entry_id: str, vertical_select: str) -> str:
+    """Unique id of an air conditioner's swing switch, shared with climate.py."""
+    return f"{DOMAIN}_{entry_id}_{vertical_select}_swing"
+
+
+class HomeKitSwingSwitch(HomeKitDeviceEntity, SwitchEntity):
+    """Vertical swing as a switch for the air conditioner's tile.
+
+    The bridge puts swing on the air conditioner service, where the Home app
+    shows it nowhere, and HomeKit has no control for fixed louver positions.
+    Categorised so the bridge never gives it its own tile.
+    """
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:arrow-oscillating"
+
+    def __init__(self, hass: HomeAssistant, entry_id: str, vertical_select: str) -> None:
+        """Initialize the swing switch."""
+        super().__init__(hass, entry_id, "Swing", vertical_select)
+        self._attr_unique_id = swing_unique_id(entry_id, vertical_select)
+        self._last_position = DEFAULT_VERTICAL_POSITION
+
+    async def async_update_from_source(self, state) -> None:
+        """Read swing from the louver select, remembering the last fixed position."""
+        if state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._attr_available = False
+            self.async_write_ha_state()
+            return
+
+        self._attr_available = True
+        self._attr_is_on = state.state == SWING_OPTION
+        if state.state != SWING_OPTION:
+            self._last_position = state.state
+        self.async_write_ha_state()
+
+    async def _select(self, option: str) -> None:
+        await self.hass.services.async_call(
+            "select",
+            "select_option",
+            {"entity_id": self._source_entity, "option": option},
+        )
+
+    async def async_turn_on(self, **kwargs) -> None:
+        """Swing the vanes."""
+        await self._select(SWING_OPTION)
+
+    async def async_turn_off(self, **kwargs) -> None:
+        """Hold the vanes at the last fixed position."""
+        await self._select(self._last_position)
 
 
 class HomeKitDryModeSwitch(HomeKitDeviceEntity, SwitchEntity):
@@ -171,6 +229,10 @@ async def async_setup_entry(
 
     elif device_type == "air_conditioner":
         climate_entity = config_entry.data.get(CONF_CLIMATE_ENTITY)
+        if vertical_select := config_entry.data.get(CONF_VERTICAL_DIRECTION):
+            entities.append(
+                HomeKitSwingSwitch(hass, config_entry.entry_id, vertical_select)
+            )
         if climate_entity and _has_dry_mode(hass, climate_entity):
             entities.append(
                 HomeKitDryModeSwitch(hass, config_entry.entry_id, climate_entity)

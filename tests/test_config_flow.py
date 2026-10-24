@@ -185,3 +185,50 @@ async def test_distinct_or_absent_tilt_is_never_rejected(hass, user_input):
     )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
+
+
+async def test_air_conditioner_options_reorder_switches_and_reload(hass):
+    """Configure rewrites the switch list in the entry's data and reloads it."""
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+    from unittest.mock import patch
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Bedroom AC",
+            CONF_DEVICE_TYPE: "air_conditioner",
+            CONF_CLIMATE_ENTITY: "climate.bedroom",
+            "program_select": "select.bedroom_program",
+            "linked_switches": ["switch.a", "switch.b"],
+        },
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.FORM
+    assert CONF_CLIMATE_ENTITY not in schema_keys(result)
+    assert suggested_values(result)["linked_switches"] == ["switch.a", "switch.b"]
+
+    with patch.object(hass.config_entries, "async_schedule_reload") as reload:
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"linked_switches": ["switch.b", "switch.a"]}
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.data["linked_switches"] == ["switch.b", "switch.a"]
+    # Cleared in the form, so gone; the climate entity is untouched.
+    assert "program_select" not in entry.data
+    assert entry.data[CONF_CLIMATE_ENTITY] == "climate.bedroom"
+    reload.assert_called_once_with(entry.entry_id)
+
+
+async def test_only_air_conditioners_offer_configure(hass):
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    from custom_components.homekit_device.config_flow import ConfigFlow
+
+    kettle = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE_TYPE: "kettle"})
+    ac = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE_TYPE: "air_conditioner"})
+
+    assert not ConfigFlow.async_supports_options_flow(kettle)
+    assert ConfigFlow.async_supports_options_flow(ac)

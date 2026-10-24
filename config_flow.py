@@ -5,6 +5,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.components.cover import CoverEntityFeature
 from homeassistant.const import ATTR_SUPPORTED_FEATURES
+from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
@@ -65,6 +66,25 @@ from .const import (
 # power switch for them.
 NO_POWER_TYPES = ("shutter", "air_conditioner")
 
+# The air conditioner fields that can change after setup. The climate entity is
+# not among them: the entry's entities are keyed on it.
+AIR_CONDITIONER_OPTIONS = {
+    vol.Optional(CONF_PROGRAM_SELECT): selector.EntitySelector(
+        selector.EntitySelectorConfig(domain="select")
+    ),
+    vol.Optional(CONF_FAN_ONLY_OPTION, default=DEFAULT_FAN_ONLY_OPTION): str,
+    vol.Optional(CONF_VERTICAL_DIRECTION): selector.EntitySelector(
+        selector.EntitySelectorConfig(domain="select")
+    ),
+    # The list order is the order of the switches in the HomeKit tile.
+    vol.Optional(CONF_LINKED_SWITCHES): selector.EntitySelector(
+        selector.EntitySelectorConfig(
+            domain=["switch", "input_boolean"],
+            multiple=True,
+        )
+    ),
+}
+
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for HomeKit Device Aggregator."""
 
@@ -73,6 +93,22 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         """Initialize config flow."""
         self._data: Dict[str, Any] = {}
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        """Edit an air conditioner after setup."""
+        return AirConditionerOptionsFlow()
+
+    @classmethod
+    @callback
+    def async_supports_options_flow(
+        cls, config_entry: config_entries.ConfigEntry
+    ) -> bool:
+        """Only air conditioners have settings worth changing in place."""
+        return config_entry.data.get(CONF_DEVICE_TYPE) == "air_conditioner"
 
     async def async_step_user(
         self, user_input: Optional[Dict[str, Any]] = None
@@ -299,21 +335,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_CLIMATE_ENTITY): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="climate")
                 ),
-                vol.Optional(CONF_PROGRAM_SELECT): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="select")
-                ),
-                vol.Optional(
-                    CONF_FAN_ONLY_OPTION, default=DEFAULT_FAN_ONLY_OPTION
-                ): str,
-                vol.Optional(CONF_VERTICAL_DIRECTION): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="select")
-                ),
-                vol.Optional(CONF_LINKED_SWITCHES): selector.EntitySelector(
-                    selector.EntitySelectorConfig(
-                        domain=["switch", "input_boolean"],
-                        multiple=True,
-                    )
-                ),
+                **AIR_CONDITIONER_OPTIONS,
             },
         }
 
@@ -324,3 +346,37 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             schema.update(device_schemas[device_type])
 
         return schema
+
+
+class AirConditionerOptionsFlow(config_entries.OptionsFlow):
+    """Change an air conditioner's switches, their order and its selects.
+
+    The values go into the entry's data, which every platform reads, and the
+    entry reloads. A new switch list then rebuilds the HomeKit accessory.
+    """
+
+    async def async_step_init(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> FlowResult:
+        """Show the air conditioner's changeable fields."""
+        entry = self.config_entry
+        if user_input is not None:
+            # A field cleared in the form is absent from user_input, so drop
+            # every changeable key before applying the submitted ones.
+            data = {
+                key: value
+                for key, value in entry.data.items()
+                if key not in {str(marker) for marker in AIR_CONDITIONER_OPTIONS}
+            }
+            self.hass.config_entries.async_update_entry(
+                entry, data={**data, **user_input}
+            )
+            self.hass.config_entries.async_schedule_reload(entry.entry_id)
+            return self.async_create_entry(data={})
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(
+                vol.Schema(AIR_CONDITIONER_OPTIONS), dict(entry.data)
+            ),
+        )

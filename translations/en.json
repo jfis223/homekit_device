@@ -149,5 +149,19 @@
         "fan_only_option": "The program select option that runs the fan on its own (iot_fan on Haier hOn units)",
         "vertical_direction": "Select for the vertical louver. HomeKit's swing toggle sets its swing option and restores the last fixed position when turned off; without it the climate's own vertical swing mode is used",
         "linked_switches": "Switches and toggle helpers shown as switches inside the air conditioner tile. Requires the patched HomeKit bridge override; stock Home Assistant ignores them. Exclude them from the bridge so they don't also appear as their own tiles"
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Air Conditioner Settings",
+                "description": "The switches appear in the HomeKit tile in the order listed here. This entry's own Swing and Dry Mode switches can be placed anywhere in the list; if left out, they go first. Saving reloads the entry and rebuilds the HomeKit accessory.",
+                "data": {
+                    "program_select": "Program Select (optional)",
+                    "fan_only_option": "Fan-Only Program Option",
+                    "vertical_direction": "Vertical Fan Direction Select (optional)",
+                    "linked_switches": "Switches Inside the Tile, in Order"
+                }
+            }
+        }
     }
 }
